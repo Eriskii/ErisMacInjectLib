@@ -26,6 +26,8 @@ unsafe extern "C" {
 unsafe extern "C" {
     static _dispatch_main_q: c_void;
     fn dispatch_async_f(queue: *const c_void, context: *mut c_void, work: Imp);
+    fn dispatch_after_f(when: u64, queue: *const c_void, context: *mut c_void, work: Imp);
+    fn dispatch_time(when: u64, delta: i64) -> u64;
     pub fn notify_register_check(name: *const c_char, token: *mut c_int) -> u32;
     pub fn notify_get_state(token: c_int, state: *mut u64) -> u32;
 }
@@ -33,6 +35,13 @@ unsafe extern "C" {
 /// Runs `work` on the main thread.
 pub fn on_main(work: extern "C" fn(*mut c_void)) {
     unsafe { dispatch_async_f(&raw const _dispatch_main_q, core::ptr::null_mut(), pac::sign(work as Imp)) };
+}
+
+/// Runs `work` on the main thread `seconds` from now.
+pub fn on_main_after(seconds: f64, work: extern "C" fn(*mut c_void)) {
+    const NOW: u64 = 0;
+    let when = unsafe { dispatch_time(NOW, (seconds * 1e9) as i64) };
+    unsafe { dispatch_after_f(when, &raw const _dispatch_main_q, core::ptr::null_mut(), pac::sign(work as Imp)) };
 }
 
 pub type DarwinCallback = extern "C" fn(*mut c_void, *const c_void, *const c_void, *const c_void, *const c_void);

@@ -149,6 +149,18 @@ pub fn swizzle_class(class_name: &CStr, method: &CStr, imp: Imp, original: &Orig
     !cls.is_null() && replace(unsafe { class_getClassMethod(cls, sel(method)) }, imp, original)
 }
 
+/// The implementation `class` has for `method` right now, stripped; None if there's no such method.
+pub fn implementation(class_name: &CStr, method: &CStr, class_method: bool) -> Option<Imp> {
+    let cls = class(class_name);
+    if cls.is_null() {
+        return None;
+    }
+    let m = unsafe {
+        if class_method { class_getClassMethod(cls, sel(method)) } else { class_getInstanceMethod(cls, sel(method)) }
+    };
+    (!m.is_null()).then(|| pac::strip(unsafe { method_getImplementation(m) }))
+}
+
 /// Creates and registers an NSObject-style class; nil if a class with that name already exists.
 pub fn define_class(name: &CStr, superclass: &CStr, methods: &[(&CStr, Imp, &CStr)]) -> Id {
     let cls = unsafe { objc_allocateClassPair(class(superclass), name.as_ptr(), 0) };
