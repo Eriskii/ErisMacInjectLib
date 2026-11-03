@@ -133,6 +133,20 @@ struct TaskDyldInfo {
 }
 
 const TASK_DYLD_INFO: c_int = 17;
+
+#[repr(C)]
+#[derive(Default)]
+struct MachTaskBasicInfo {
+    virtual_size: u64,
+    resident_size: u64,
+    resident_size_max: u64,
+    user_time: [i32; 2],
+    system_time: [i32; 2],
+    policy: i32,
+    suspend_count: i32,
+}
+
+const MACH_TASK_BASIC_INFO: c_int = 20;
 /// Offset of `libSystemInitialized` in `struct dyld_all_image_infos`.
 const LIBSYSTEM_INITIALIZED: usize = 25;
 
@@ -153,6 +167,16 @@ pub fn ready(pid: i32) -> Result<bool, Error> {
         mach_vm_read_overwrite(task.port, address, header.len() as u64, header.as_mut_ptr() as u64, &mut read)
     })?;
     Ok(header[LIBSYSTEM_INITIALIZED] != 0)
+}
+
+/// Whether `pid` is suspended: app extensions and widgets sit suspended until they're needed, and a
+/// thread started in one doesn't run until then.
+pub fn suspended(pid: i32) -> Result<bool, Error> {
+    let task = Task::of(pid)?;
+    let mut info = MachTaskBasicInfo::default();
+    let mut count = (size_of::<MachTaskBasicInfo>() / 4) as u32;
+    check("task_info", unsafe { task_info(task.port, MACH_TASK_BASIC_INFO, (&raw mut info).cast(), &mut count) })?;
+    Ok(info.suspend_count > 0)
 }
 
 /// Where the payload's code ended up and where its first thread should run.

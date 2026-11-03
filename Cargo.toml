@@ -6,7 +6,7 @@ members = ["crates/inject", "crates/payload", "crates/thread"]
 default-members = ["crates/inject"]
 
 [workspace.package]
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/Eriskii/ErisMacInjectLib"

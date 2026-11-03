@@ -148,6 +148,12 @@ pub fn run(client: &mut impl Client) -> ! {
             let Some(Seen::Starting { since, bundle }) = seen.get(&pid) else {
                 continue;
             };
+            // A suspended process can't start a thread; wait for it to be woken, however long.
+            if inject::suspended(pid).unwrap_or(false) {
+                let bundle = bundle.clone();
+                seen.insert(pid, Seen::Starting { since: Instant::now(), bundle });
+                continue;
+            }
             let next = match inject::ready(pid) {
                 Ok(false) if since.elapsed() < GIVE_UP => continue,
                 Ok(false) => {
