@@ -1,0 +1,20 @@
+[workspace]
+resolver = "3"
+members = ["crates/inject", "crates/payload", "crates/thread"]
+# The payload runtime and the thread helper are no_std and built with -Zbuild-std by the projects
+# that use them, so plain `cargo build` and `cargo test` leave them out.
+default-members = ["crates/inject"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/Eriskii/ErisMacInjectLib"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+lto = true
+codegen-units = 1

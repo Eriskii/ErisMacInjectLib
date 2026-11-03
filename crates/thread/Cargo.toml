@@ -1,0 +1,13 @@
+[package]
+name = "eris-inject-thread"
+description = "Starts a payload's thread inside an app (arm64e helper for eris-inject)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "eris-inject-thread"
+path = "src/main.rs"
+test = false

@@ -1,0 +1,11 @@
+[package]
+name = "eris-inject-payload"
+description = "The no_std runtime for payloads eris-inject loads: PAC, Objective-C, allocator, logging, bootstrap"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+test = false

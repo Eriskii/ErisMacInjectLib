@@ -1,0 +1,12 @@
+[package]
+name = "eris-inject"
+description = "Loads a no_std payload dylib into running macOS apps without dyld, and the daemon around it"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+libc = "0.2"
+plist = "1"
