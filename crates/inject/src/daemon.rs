@@ -16,7 +16,8 @@ const GIVE_UP: Duration = Duration::from_secs(15);
 const CRASH_WINDOW: Duration = Duration::from_secs(10);
 const CRASHES_BEFORE_BLOCKING: usize = 2;
 
-/// System UI that isn't an ordinary app, and apps holding secrets: never loaded into.
+/// System UI that isn't an ordinary app, and apps holding secrets: what [`Client::wants`] leaves
+/// out by default.
 pub const ALWAYS_SKIPPED: &[&str] = &[
     "com.apple.dock",
     "com.apple.loginwindow",
@@ -39,13 +40,19 @@ pub trait Client {
     /// them.
     fn user_changed(&mut self, _uid: u32, _home: &Path) {}
 
-    /// Whether to load into the app `bundle_id`, run by the console user whose home is `home`.
-    fn wants(&mut self, _bundle_id: &str, _home: &Path) -> bool {
-        true
+    /// Whether to load into `app`, run by the console user whose home is `home`. By default, regular
+    /// apps that aren't in [`ALWAYS_SKIPPED`].
+    fn wants(&mut self, app: &procs::App, _home: &Path) -> bool {
+        regular(app)
     }
 
     /// Loads into `pid`, which is ready (see [`inject::ready`]).
     fn load(&mut self, pid: i32, bundle_id: &str) -> Result<(), inject::Error>;
+}
+
+/// A regular app (see [`procs::App::is_regular`]) that isn't in [`ALWAYS_SKIPPED`].
+pub fn regular(app: &procs::App) -> bool {
+    app.is_regular() && !ALWAYS_SKIPPED.contains(&app.id.as_str())
 }
 
 enum Seen {
@@ -134,11 +141,11 @@ fn classify(pid: i32, uid: u32, home: &Path, client: &mut impl Client, blocked: 
     let Some(exe) = procs::executable(pid) else {
         return Seen::Ignored;
     };
-    let Some(id) = procs::app_bundle(&exe).and_then(|bundle| procs::regular_app(&bundle, &exe)) else {
+    let Some(app) = procs::app(&exe) else {
         return Seen::Ignored;
     };
-    if ALWAYS_SKIPPED.contains(&id.as_str()) || blocked.contains(&id) || !client.wants(&id, home) {
+    if blocked.contains(&app.id) || !client.wants(&app, home) {
         return Seen::Ignored;
     }
-    Seen::Starting { since: Instant::now(), bundle: id }
+    Seen::Starting { since: Instant::now(), bundle: app.id }
 }
