@@ -1,19 +1,24 @@
 //! The root daemon's loop: watches for apps of the logged-in user starting and, once each is far
-//! enough along, hands it to a [`Client`] to load into. Apps that keep dying right after a load
+//! enough along, hands it to a [`Client`] to load into. Apps that keep crashing right after a load
 //! are left alone until the daemon restarts.
 
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::{inject, log, procs};
 
 const POLL: Duration = Duration::from_millis(100);
 /// An app that hasn't finished starting by then isn't going to.
 const GIVE_UP: Duration = Duration::from_secs(15);
-/// An app that dies this soon after a load counts as a crash.
+/// An app that dies this soon after a load is checked for a crash report.
 const CRASH_WINDOW: Duration = Duration::from_secs(10);
+/// How long ReportCrash gets to write the report of an app that died.
+const REPORT_WAIT: Duration = Duration::from_secs(5);
+/// A process that isn't (yet) an app of the user's is looked at again for this long, in case it's
+/// still on its way there: launchd starts apps through `xpcproxy`, as root, under the same pid.
+const RECHECK: Duration = Duration::from_secs(15);
 const CRASHES_BEFORE_BLOCKING: usize = 2;
 
 /// System UI that isn't an ordinary app, and apps holding secrets: what [`Client::wants`] leaves
@@ -56,9 +61,19 @@ pub fn regular(app: &procs::App) -> bool {
 }
 
 enum Seen {
-    Ignored,
+    /// `recheck` until when to look again if the executable changes (see [`RECHECK`]).
+    Ignored { recheck: Option<Instant>, exe: Option<PathBuf> },
     Starting { since: Instant, bundle: String },
-    Loaded { at: Instant, bundle: String },
+    Loaded { at: Instant, wall: SystemTime, bundle: String, name: String },
+}
+
+/// An app that died soon after a load, waiting on a crash report.
+struct Death {
+    bundle: String,
+    pid: i32,
+    name: String,
+    loaded: SystemTime,
+    at: Instant,
 }
 
 /// Runs forever.
@@ -66,6 +81,7 @@ pub fn run(client: &mut impl Client) -> ! {
     let mut user: Option<(u32, PathBuf)> = None;
     let mut seen: HashMap<i32, Seen> = HashMap::new();
     let mut crashes: HashMap<String, Vec<Instant>> = HashMap::new();
+    let mut deaths: Vec<Death> = Vec::new();
     let mut blocked: HashSet<String> = HashSet::new();
     let me = std::process::id() as i32;
 
@@ -84,15 +100,28 @@ pub fn run(client: &mut impl Client) -> ! {
             if pids.contains(pid) {
                 return true;
             }
-            if let Seen::Loaded { at, bundle } = state
+            if let Seen::Loaded { at, wall, bundle, name } = state
                 && at.elapsed() < CRASH_WINDOW
             {
-                let recent = crashes.entry(bundle.clone()).or_default();
+                let (bundle, name) = (std::mem::take(bundle), std::mem::take(name));
+                deaths.push(Death { bundle, pid: *pid, name, loaded: *wall, at: Instant::now() });
+            }
+            false
+        });
+
+        // Quitting an app soon after it started is no crash; only a crash report makes it one.
+        deaths.retain(|d| {
+            let crashed = crash_reported(&home, &d.name, d.loaded);
+            if !crashed && d.at.elapsed() < REPORT_WAIT {
+                return true;
+            }
+            if crashed {
+                let recent = crashes.entry(d.bundle.clone()).or_default();
                 recent.push(Instant::now());
                 recent.retain(|t| t.elapsed() < Duration::from_secs(300));
-                log!("{bundle} (pid {pid}) exited {:.1}s after loading", at.elapsed().as_secs_f32());
-                if recent.len() >= CRASHES_BEFORE_BLOCKING && blocked.insert(bundle.clone()) {
-                    log!("{bundle} keeps dying after loading; leaving it alone until the daemon restarts");
+                log!("{} (pid {}) crashed soon after loading", d.bundle, d.pid);
+                if recent.len() >= CRASHES_BEFORE_BLOCKING && blocked.insert(d.bundle.clone()) {
+                    log!("{} keeps crashing after loading; leaving it alone until the daemon restarts", d.bundle);
                 }
             }
             false
@@ -102,8 +131,19 @@ pub fn run(client: &mut impl Client) -> ! {
             if pid == me {
                 continue;
             }
-            if let Entry::Vacant(entry) = seen.entry(pid) {
-                entry.insert(classify(pid, uid, &home, client, &blocked));
+            match seen.entry(pid) {
+                Entry::Vacant(entry) => {
+                    entry.insert(classify(pid, uid, &home, client, &blocked, Instant::now() + RECHECK));
+                }
+                Entry::Occupied(mut entry) => {
+                    if let Seen::Ignored { recheck: Some(until), exe } = entry.get()
+                        && Instant::now() < *until
+                        && procs::executable(pid) != *exe
+                    {
+                        let until = *until;
+                        entry.insert(classify(pid, uid, &home, client, &blocked, until));
+                    }
+                }
             }
             let Some(Seen::Starting { since, bundle }) = seen.get(&pid) else {
                 continue;
@@ -112,21 +152,24 @@ pub fn run(client: &mut impl Client) -> ! {
                 Ok(false) if since.elapsed() < GIVE_UP => continue,
                 Ok(false) => {
                     log!("{bundle} (pid {pid}) never finished starting");
-                    Seen::Ignored
+                    done()
                 }
                 Ok(true) => match client.load(pid, bundle) {
                     Ok(()) => {
                         log!("loaded into {bundle} (pid {pid})");
-                        Seen::Loaded { at: Instant::now(), bundle: bundle.clone() }
+                        let name = procs::executable(pid)
+                            .and_then(|e| e.file_name().map(|n| n.to_string_lossy().into_owned()))
+                            .unwrap_or_default();
+                        Seen::Loaded { at: Instant::now(), wall: SystemTime::now(), bundle: bundle.clone(), name }
                     }
                     Err(e) => {
                         log!("loading into {bundle} (pid {pid}) failed: {e}");
-                        Seen::Ignored
+                        done()
                     }
                 },
                 Err(e) => {
                     log!("checking {bundle} (pid {pid}) failed: {e}");
-                    Seen::Ignored
+                    done()
                 }
             };
             seen.insert(pid, next);
@@ -134,18 +177,41 @@ pub fn run(client: &mut impl Client) -> ! {
     }
 }
 
-fn classify(pid: i32, uid: u32, home: &Path, client: &mut impl Client, blocked: &HashSet<String>) -> Seen {
+/// Ignored for good: not looked at again.
+fn done() -> Seen {
+    Seen::Ignored { recheck: None, exe: None }
+}
+
+/// A process that isn't an app of the user's (yet) is looked at again until `recheck`.
+fn classify(pid: i32, uid: u32, home: &Path, client: &mut impl Client, blocked: &HashSet<String>, recheck: Instant) -> Seen {
+    let exe = procs::executable(pid);
+    let ignored = |exe: Option<PathBuf>| Seen::Ignored { recheck: Some(recheck), exe };
     if procs::owner(pid) != Some(uid) {
-        return Seen::Ignored;
+        return ignored(exe);
     }
-    let Some(exe) = procs::executable(pid) else {
-        return Seen::Ignored;
-    };
-    let Some(app) = procs::app(&exe) else {
-        return Seen::Ignored;
+    let Some(app) = exe.as_deref().and_then(procs::app) else {
+        return ignored(exe);
     };
     if blocked.contains(&app.id) || !client.wants(&app, home) {
-        return Seen::Ignored;
+        return done();
     }
     Seen::Starting { since: Instant::now(), bundle: app.id }
+}
+
+/// Whether ReportCrash wrote a report for a process named `name` since `since`, in the user's or the
+/// system's DiagnosticReports.
+fn crash_reported(home: &Path, name: &str, since: SystemTime) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let prefix = format!("{name}-");
+    [home.join("Library/Logs/DiagnosticReports"), PathBuf::from("/Library/Logs/DiagnosticReports")].iter().any(|dir| {
+        std::fs::read_dir(dir).into_iter().flatten().flatten().any(|entry| {
+            let file = entry.file_name();
+            let file = file.to_string_lossy();
+            file.starts_with(&prefix)
+                && file.ends_with(".ips")
+                && entry.metadata().and_then(|m| m.modified()).is_ok_and(|m| m >= since)
+        })
+    })
 }
