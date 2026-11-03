@@ -22,7 +22,7 @@ checksum = "00d174d5400e5e8fd687ad1049e2f578285fa914201b1af7e8b112a4546bd826"
 
 [[package]]
 name = "eris-inject"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "libc",
  "plist",
@@ -30,11 +30,11 @@ dependencies = [
 
 [[package]]
 name = "eris-inject-payload"
-version = "0.1.0"
+version = "0.1.2"
 
 [[package]]
 name = "eris-inject-thread"
-version = "0.1.0"
+version = "0.1.2"
 
 [[package]]
 name = "hashbrown"
